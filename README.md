@@ -106,3 +106,10 @@ For market state `(qYes, qNo)` and liquidity `b`:
 - Sell payout: `C(old) - C(new)`
 
 This repo keeps the implementation straightforward for local development and learning.
+
+
+# Account Funding
+- fund account with
+```bash
+cast send --value 100ether --private-key $PRIVATE_KEY $RECEPIENT_ADDRESS #funding for testing
+```
