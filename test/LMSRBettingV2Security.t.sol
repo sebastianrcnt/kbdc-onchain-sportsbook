@@ -295,7 +295,7 @@ contract LMSRBettingV2SecurityTest is Test {
         vm.prank(owner);
         market.fund();
 
-        uint256 shares = 1;
+        uint256 shares = 1e15;
         uint256 buyCost = market.quoteBuyCost(true, shares);
         vm.prank(alice);
         market.buy(true, shares, buyCost);
@@ -720,9 +720,9 @@ contract LMSRBettingV2SecurityTest is Test {
         vm.prank(owner);
         market.fund();
 
-        uint256 cost = market.quoteBuyCost(true, 1 wei);
+        uint256 cost = market.quoteBuyCost(true, 1e15);
         vm.prank(alice);
-        market.buy(true, 1 wei, cost);
+        market.buy(true, 1e15, cost);
 
         vm.prank(owner);
         market.resolve(true);

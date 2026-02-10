@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-import {Test} from "forge-std/Test.sol";
+import {StdStorage, Test} from "forge-std/Test.sol";
+import {stdStorage} from "forge-std/StdStorage.sol";
 import {LMSRBettingV2Factory, LMSRBettingV2Market} from "../src/LMSRBettingV2.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockERC20Decimals} from "./mocks/MockERC20Decimals.sol";
@@ -87,6 +88,8 @@ contract LMSRBettingV2FactoryTest is Test {
 }
 
 contract LMSRBettingV2MarketTest is Test {
+    using stdStorage for StdStorage;
+
     LMSRBettingV2Market internal market;
     MockERC20 internal token;
 
@@ -777,6 +780,7 @@ contract LMSRBettingV2MarketTest is Test {
         assertEq(summary.yesProb, 0.5 ether);
         assertEq(summary.noProb, 0.5 ether);
         assertEq(summary.yesProb + summary.noProb, 1 ether);
+        assertEq(summary.expInputStatus, 0);
     }
 
     function test_GetMarketSummaryUpdatesAfterTradesAndResolution() public {
@@ -797,6 +801,7 @@ contract LMSRBettingV2MarketTest is Test {
             1 ether,
             1
         );
+        assertEq(activeSummary.expInputStatus, 0);
 
         vm.prank(owner);
         market.resolve(true);
@@ -805,6 +810,28 @@ contract LMSRBettingV2MarketTest is Test {
             .getMarketSummary();
         assertTrue(resolvedSummary.resolved);
         assertTrue(resolvedSummary.winningOutcome);
+        assertEq(resolvedSummary.expInputStatus, 0);
+    }
+
+    function test_GetMarketSummaryClampsOnOverflow() public {
+        uint256 qYesSlot = stdstore
+            .target(address(market))
+            .sig("qYes()")
+            .find();
+        uint256 qNoSlot = stdstore
+            .target(address(market))
+            .sig("qNo()")
+            .find();
+
+        uint256 over = market.liquidity() * 200;
+        vm.store(address(market), bytes32(qYesSlot), bytes32(over));
+        vm.store(address(market), bytes32(qNoSlot), bytes32(over));
+
+        LMSRBettingV2Market.MarketSummary memory summary = market
+            .getMarketSummary();
+
+        assertEq(summary.expInputStatus, 3);
+        assertApproxEqAbs(summary.yesProb + summary.noProb, 1 ether, 1);
     }
 
     function test_GetUserInfoNoShares() public view {
@@ -813,6 +840,8 @@ contract LMSRBettingV2MarketTest is Test {
         assertEq(info.userYesShares, 0);
         assertEq(info.userNoShares, 0);
         assertEq(info.claimableAmount, 0);
+        assertEq(info.sellYesValue, 0);
+        assertEq(info.sellNoValue, 0);
         assertEq(info.currentSellValue, 0);
     }
 
@@ -830,6 +859,11 @@ contract LMSRBettingV2MarketTest is Test {
         assertEq(beforeResolve.userYesShares, shares);
         assertEq(beforeResolve.userNoShares, 0);
         assertEq(beforeResolve.claimableAmount, 0);
+        assertEq(
+            beforeResolve.sellYesValue,
+            market.quoteSellPayout(true, shares)
+        );
+        assertEq(beforeResolve.sellNoValue, 0);
         assertEq(
             beforeResolve.currentSellValue,
             market.quoteSellPayout(true, shares)
@@ -859,6 +893,11 @@ contract LMSRBettingV2MarketTest is Test {
         assertEq(beforeResolve.userNoShares, shares);
         assertEq(beforeResolve.claimableAmount, 0);
         assertEq(
+            beforeResolve.sellNoValue,
+            market.quoteSellPayout(false, shares)
+        );
+        assertEq(beforeResolve.sellYesValue, 0);
+        assertEq(
             beforeResolve.currentSellValue,
             market.quoteSellPayout(false, shares)
         );
@@ -872,7 +911,7 @@ contract LMSRBettingV2MarketTest is Test {
         assertEq(afterResolve.claimableAmount, shares);
     }
 
-    function test_GetUserInfoBothSidesUsesYesSellValueBranch() public {
+    function test_GetUserInfoBothSidesSumsSellValue() public {
         _fundMarket();
 
         uint256 yesShares = 1 ether;
@@ -889,10 +928,11 @@ contract LMSRBettingV2MarketTest is Test {
         LMSRBettingV2Market.UserInfo memory info = market.getUserInfo(alice);
         assertEq(info.userYesShares, yesShares);
         assertEq(info.userNoShares, noShares);
-        assertEq(
-            info.currentSellValue,
-            market.quoteSellPayout(true, yesShares)
-        );
+        uint256 yesValue = market.quoteSellPayout(true, yesShares);
+        uint256 noValue = market.quoteSellPayout(false, noShares);
+        assertEq(info.sellYesValue, yesValue);
+        assertEq(info.sellNoValue, noValue);
+        assertEq(info.currentSellValue, yesValue + noValue);
     }
 
     // ============ Integration Tests ============

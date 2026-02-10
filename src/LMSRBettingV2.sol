@@ -275,6 +275,7 @@ contract LMSRBettingV2Market is Ownable {
 
         uint256 cost = _quoteBuyCost(outcome, shares);
         require(cost <= maxCost, "slippage exceeded");
+        require(cost > 0, "cost too small");
 
         uint256 beforeBal = IERC20(currency).balanceOf(address(this));
         _safeTransferFrom(currency, msg.sender, address(this), cost);
@@ -310,6 +311,7 @@ contract LMSRBettingV2Market is Ownable {
 
         uint256 payout = _quoteSellPayout(outcome, shares);
         require(payout >= minPayout, "slippage exceeded");
+        require(payout > 0, "payout too small");
 
         // state update
         if (outcome) {
@@ -433,21 +435,29 @@ contract LMSRBettingV2Market is Ownable {
         bool winningOutcome;
         uint256 yesProb; // 실시간 Yes 확률 (WAD)
         uint256 noProb; // 실시간 No 확률 (WAD)
+        uint8 expInputStatus; // 0=OK,1=YES clamped,2=NO clamped,3=both clamped
+    }
+
+    function _expWadClamped(
+        uint256 q,
+        uint256 b
+    ) internal pure returns (uint256 exp, bool clamped) {
+        uint256 input = FixedPointMathLib.fullMulDiv(q, WAD, b);
+        if (input > MAX_EXP_INPUT_WAD) {
+            input = MAX_EXP_INPUT_WAD;
+            clamped = true;
+        }
+        exp = uint256(FixedPointMathLib.expWad(int256(input)));
     }
 
     function getMarketSummary() external view returns (MarketSummary memory) {
         // 확률 계산 (LMSR 공식: P_i = exp(q_i/b) / sum(exp(q_j/b)))
-        uint256 expY = uint256(
-            FixedPointMathLib.expWad(
-                int256(FixedPointMathLib.fullMulDiv(qYes, WAD, liquidity))
-            )
-        );
-        uint256 expN = uint256(
-            FixedPointMathLib.expWad(
-                int256(FixedPointMathLib.fullMulDiv(qNo, WAD, liquidity))
-            )
-        );
+        (uint256 expY, bool yClamped) = _expWadClamped(qYes, liquidity);
+        (uint256 expN, bool nClamped) = _expWadClamped(qNo, liquidity);
         uint256 totalExp = expY + expN;
+        uint8 status = 0;
+        if (yClamped) status |= 1;
+        if (nClamped) status |= 2;
 
         return
             MarketSummary({
@@ -460,7 +470,8 @@ contract LMSRBettingV2Market is Ownable {
                 resolved: resolved,
                 winningOutcome: winningOutcome,
                 yesProb: FixedPointMathLib.fullMulDiv(expY, WAD, totalExp),
-                noProb: FixedPointMathLib.fullMulDiv(expN, WAD, totalExp)
+                noProb: FixedPointMathLib.fullMulDiv(expN, WAD, totalExp),
+                expInputStatus: status
             });
     }
 
@@ -468,16 +479,20 @@ contract LMSRBettingV2Market is Ownable {
         uint256 userYesShares;
         uint256 userNoShares;
         uint256 claimableAmount; // 승리 시 받을 금액
-        uint256 currentSellValue; // 지금 당장 판매할 때 가치
+        uint256 sellYesValue; // Yes를 전량 판매할 때 가치
+        uint256 sellNoValue; // No를 전량 판매할 때 가치
+        uint256 currentSellValue; // 지금 당장 판매할 때 가치(Yes+No)
     }
 
     function getUserInfo(address user) external view returns (UserInfo memory) {
-        uint256 sellValue = 0;
+        uint256 sellYesValue = 0;
+        uint256 sellNoValue = 0;
         // 보유한 주식 중 가치가 있는 것을 계산
         if (yesShares[user] > 0) {
-            sellValue = _quoteSellPayout(true, yesShares[user]);
-        } else if (noShares[user] > 0) {
-            sellValue = _quoteSellPayout(false, noShares[user]);
+            sellYesValue = _quoteSellPayout(true, yesShares[user]);
+        }
+        if (noShares[user] > 0) {
+            sellNoValue = _quoteSellPayout(false, noShares[user]);
         }
 
         return
@@ -487,7 +502,9 @@ contract LMSRBettingV2Market is Ownable {
                 claimableAmount: resolved
                     ? (winningOutcome ? yesShares[user] : noShares[user])
                     : 0,
-                currentSellValue: sellValue
+                sellYesValue: sellYesValue,
+                sellNoValue: sellNoValue,
+                currentSellValue: sellYesValue + sellNoValue
             });
     }
 }
