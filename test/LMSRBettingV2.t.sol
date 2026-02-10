@@ -770,6 +770,134 @@ contract LMSRBettingV2MarketTest is Test {
         assertTrue(market.resolved());
     }
 
+    // ============ View Helper Tests ============
+
+    function test_GetMarketSummaryInitialState() public view {
+        LMSRBettingV2Market.MarketSummary memory summary = market
+            .getMarketSummary();
+
+        assertEq(summary.name, "Test Market");
+        assertEq(summary.currency, address(token));
+        assertEq(summary.pool, 0);
+        assertEq(summary.qYes, 0);
+        assertEq(summary.qNo, 0);
+        assertEq(summary.liquidity, LIQUIDITY);
+        assertFalse(summary.resolved);
+        assertFalse(summary.winningOutcome);
+        assertEq(summary.yesProb, 0.5 ether);
+        assertEq(summary.noProb, 0.5 ether);
+        assertEq(summary.yesProb + summary.noProb, 1 ether);
+    }
+
+    function test_GetMarketSummaryUpdatesAfterTradesAndResolution() public {
+        _fundMarket();
+
+        uint256 yesCost = market.quoteBuyCost(true, 4 ether);
+        vm.prank(alice);
+        market.buy(true, 4 ether, yesCost);
+
+        LMSRBettingV2Market.MarketSummary memory activeSummary = market
+            .getMarketSummary();
+        assertEq(activeSummary.qYes, 4 ether);
+        assertEq(activeSummary.qNo, 0);
+        assertEq(activeSummary.pool, market.pool());
+        assertGt(activeSummary.yesProb, activeSummary.noProb);
+        assertApproxEqAbs(activeSummary.yesProb + activeSummary.noProb, 1 ether, 1);
+
+        vm.prank(owner);
+        market.resolve(true);
+
+        LMSRBettingV2Market.MarketSummary memory resolvedSummary = market
+            .getMarketSummary();
+        assertTrue(resolvedSummary.resolved);
+        assertTrue(resolvedSummary.winningOutcome);
+    }
+
+    function test_GetUserInfoNoShares() public view {
+        LMSRBettingV2Market.UserInfo memory info = market.getUserInfo(alice);
+
+        assertEq(info.userYesShares, 0);
+        assertEq(info.userNoShares, 0);
+        assertEq(info.claimableAmount, 0);
+        assertEq(info.currentSellValue, 0);
+    }
+
+    function test_GetUserInfoYesSharesBeforeAndAfterResolution() public {
+        _fundMarket();
+
+        uint256 shares = 2 ether;
+        uint256 cost = market.quoteBuyCost(true, shares);
+        vm.prank(alice);
+        market.buy(true, shares, cost);
+
+        LMSRBettingV2Market.UserInfo memory beforeResolve = market.getUserInfo(
+            alice
+        );
+        assertEq(beforeResolve.userYesShares, shares);
+        assertEq(beforeResolve.userNoShares, 0);
+        assertEq(beforeResolve.claimableAmount, 0);
+        assertEq(
+            beforeResolve.currentSellValue,
+            market.quoteSellPayout(true, shares)
+        );
+
+        vm.prank(owner);
+        market.resolve(true);
+
+        LMSRBettingV2Market.UserInfo memory afterResolve = market.getUserInfo(
+            alice
+        );
+        assertEq(afterResolve.claimableAmount, shares);
+    }
+
+    function test_GetUserInfoNoSharesWinningPath() public {
+        _fundMarket();
+
+        uint256 shares = 3 ether;
+        uint256 cost = market.quoteBuyCost(false, shares);
+        vm.prank(alice);
+        market.buy(false, shares, cost);
+
+        LMSRBettingV2Market.UserInfo memory beforeResolve = market.getUserInfo(
+            alice
+        );
+        assertEq(beforeResolve.userYesShares, 0);
+        assertEq(beforeResolve.userNoShares, shares);
+        assertEq(beforeResolve.claimableAmount, 0);
+        assertEq(
+            beforeResolve.currentSellValue,
+            market.quoteSellPayout(false, shares)
+        );
+
+        vm.prank(owner);
+        market.resolve(false);
+
+        LMSRBettingV2Market.UserInfo memory afterResolve = market.getUserInfo(
+            alice
+        );
+        assertEq(afterResolve.claimableAmount, shares);
+    }
+
+    function test_GetUserInfoBothSidesUsesYesSellValueBranch() public {
+        _fundMarket();
+
+        uint256 yesShares = 1 ether;
+        uint256 noShares = 2 ether;
+
+        uint256 yesCost = market.quoteBuyCost(true, yesShares);
+        vm.prank(alice);
+        market.buy(true, yesShares, yesCost);
+
+        uint256 noCost = market.quoteBuyCost(false, noShares);
+        vm.prank(alice);
+        market.buy(false, noShares, noCost);
+
+        LMSRBettingV2Market.UserInfo memory info = market.getUserInfo(alice);
+        assertEq(info.userYesShares, yesShares);
+        assertEq(info.userNoShares, noShares);
+        assertEq(info.currentSellValue, market.quoteSellPayout(true, yesShares));
+    }
+
     // ============ Integration Tests ============
 
     function test_FullMarketLifecycle() public {

@@ -429,4 +429,73 @@ contract LMSRBettingV2Market is Ownable {
             "transfer failed"
         );
     }
+
+    struct MarketSummary {
+        string name;
+        address currency;
+        uint256 pool;
+        uint256 qYes;
+        uint256 qNo;
+        uint256 liquidity;
+        bool resolved;
+        bool winningOutcome;
+        uint256 yesProb; // 실시간 Yes 확률 (WAD)
+        uint256 noProb; // 실시간 No 확률 (WAD)
+    }
+
+    function getMarketSummary() external view returns (MarketSummary memory) {
+        // 확률 계산 (LMSR 공식: P_i = exp(q_i/b) / sum(exp(q_j/b)))
+        uint256 expY = uint256(
+            FixedPointMathLib.expWad(
+                int256(FixedPointMathLib.fullMulDiv(qYes, WAD, liquidity))
+            )
+        );
+        uint256 expN = uint256(
+            FixedPointMathLib.expWad(
+                int256(FixedPointMathLib.fullMulDiv(qNo, WAD, liquidity))
+            )
+        );
+        uint256 totalExp = expY + expN;
+
+        return
+            MarketSummary({
+                name: name,
+                currency: currency,
+                pool: pool,
+                qYes: qYes,
+                qNo: qNo,
+                liquidity: liquidity,
+                resolved: resolved,
+                winningOutcome: winningOutcome,
+                yesProb: FixedPointMathLib.fullMulDiv(expY, WAD, totalExp),
+                noProb: FixedPointMathLib.fullMulDiv(expN, WAD, totalExp)
+            });
+    }
+
+    struct UserInfo {
+        uint256 userYesShares;
+        uint256 userNoShares;
+        uint256 claimableAmount; // 승리 시 받을 금액
+        uint256 currentSellValue; // 지금 당장 판매할 때 가치
+    }
+
+    function getUserInfo(address user) external view returns (UserInfo memory) {
+        uint256 sellValue = 0;
+        // 보유한 주식 중 가치가 있는 것을 계산
+        if (yesShares[user] > 0) {
+            sellValue = _quoteSellPayout(true, yesShares[user]);
+        } else if (noShares[user] > 0) {
+            sellValue = _quoteSellPayout(false, noShares[user]);
+        }
+
+        return
+            UserInfo({
+                userYesShares: yesShares[user],
+                userNoShares: noShares[user],
+                claimableAmount: resolved
+                    ? (winningOutcome ? yesShares[user] : noShares[user])
+                    : 0,
+                currentSellValue: sellValue
+            });
+    }
 }
