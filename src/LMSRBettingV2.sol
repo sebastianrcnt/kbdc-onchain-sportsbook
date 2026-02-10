@@ -134,14 +134,9 @@ contract LMSRBettingV2Market is Ownable {
         // [Name]
         name = _name;
 
-        // [Owner - additional validation]
-        require(_isWallet(_owner), "owner is not a wallet");
-
         // [Currency]
         // require for currency to be nonzero
         require(_currency != address(0), "invalid currency");
-        // require for currency to be a contract
-        require(!_isWallet(_currency), "invalid currency");
         require(
             IERC20Metadata(_currency).decimals() == 18,
             "unsupported decimals"
