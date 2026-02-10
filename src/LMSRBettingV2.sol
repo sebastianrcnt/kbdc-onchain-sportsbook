@@ -142,7 +142,7 @@ contract LMSRBettingV2Market is Ownable {
     // [Helpers]
     function initialFunding() public view returns (uint256) {
         require(liquidity > 0, "invalid liquidity");
-        return FixedPointMathLib.fullMulDivUp(liquidity, WAD, LN_2_WAD);
+        return FixedPointMathLib.fullMulDivUp(liquidity, LN_2_WAD, WAD);
     }
 
     function funded() public view returns (bool) {
@@ -231,7 +231,7 @@ contract LMSRBettingV2Market is Ownable {
     }
 
     // [Payables]
-    function fund() external payable onlyOwner {
+    function fund() external onlyOwner {
         require(!funded(), "already funded");
         IERC20(currency).transferFrom(
             msg.sender,
@@ -241,11 +241,7 @@ contract LMSRBettingV2Market is Ownable {
         emit Funded(msg.sender, initialFunding());
     }
 
-    function buy(
-        bool outcome,
-        uint256 shares,
-        uint256 maxCost
-    ) external payable {
+    function buy(bool outcome, uint256 shares, uint256 maxCost) external {
         require(shares > 0, "invalid shares");
         require(!resolved, "market closed");
 
