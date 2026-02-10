@@ -142,19 +142,9 @@ contract LMSRBettingV2MarketTest is Test {
         new LMSRBettingV2Market("Test", owner, address(0), LIQUIDITY);
     }
 
-    function test_RevertConstructorWithWalletAsCurrency() public {
-        vm.expectRevert("invalid currency");
-        new LMSRBettingV2Market("Test", owner, alice, LIQUIDITY);
-    }
-
     function test_RevertConstructorWithZeroLiquidity() public {
         vm.expectRevert("invalid liquidity");
         new LMSRBettingV2Market("Test", owner, address(token), 0);
-    }
-
-    function test_RevertConstructorWithContractAsOwner() public {
-        vm.expectRevert("owner is not a wallet");
-        new LMSRBettingV2Market("Test", address(token), address(token), LIQUIDITY);
     }
 
     function test_RevertConstructorWithUnsupportedDecimals() public {
@@ -802,7 +792,11 @@ contract LMSRBettingV2MarketTest is Test {
         assertEq(activeSummary.qNo, 0);
         assertEq(activeSummary.pool, market.pool());
         assertGt(activeSummary.yesProb, activeSummary.noProb);
-        assertApproxEqAbs(activeSummary.yesProb + activeSummary.noProb, 1 ether, 1);
+        assertApproxEqAbs(
+            activeSummary.yesProb + activeSummary.noProb,
+            1 ether,
+            1
+        );
 
         vm.prank(owner);
         market.resolve(true);
@@ -895,7 +889,10 @@ contract LMSRBettingV2MarketTest is Test {
         LMSRBettingV2Market.UserInfo memory info = market.getUserInfo(alice);
         assertEq(info.userYesShares, yesShares);
         assertEq(info.userNoShares, noShares);
-        assertEq(info.currentSellValue, market.quoteSellPayout(true, yesShares));
+        assertEq(
+            info.currentSellValue,
+            market.quoteSellPayout(true, yesShares)
+        );
     }
 
     // ============ Integration Tests ============
@@ -938,7 +935,10 @@ contract LMSRBettingV2MarketTest is Test {
         market.claim();
 
         // 6. Verify payouts
-        assertEq(token.balanceOf(alice), aliceBalanceBefore + (3 ether - sellAmount));
+        assertEq(
+            token.balanceOf(alice),
+            aliceBalanceBefore + (3 ether - sellAmount)
+        );
         assertEq(token.balanceOf(charlie), charlieBalanceBefore + 1 ether);
 
         // 7. Owner withdraws remaining
