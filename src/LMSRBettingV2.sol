@@ -9,11 +9,6 @@ interface IERC20Metadata {
     function decimals() external view returns (uint8);
 }
 
-// lmsr market factory가 있고 여기서 마켓을 만들 수 있음.
-// 이 마켓 팩토리는 ERC-20 토큰을 용하여 마켓 운영 가능.
-// 마켓은 마켓 팩토리에서 생성되며, 마켓별로 수수료를 설정할 수 있음.
-// Initial Funding은 ERC-20 토큰으로 받으며, 최소수량 만큼 예치해야 함.
-
 contract LMSRBettingV2Factory is Ownable {
     // [State]
     address[] public markets;
@@ -82,10 +77,10 @@ contract LMSRBettingV2Market is Ownable {
 
     // resolved?
     bool public resolved;
-    
+
     // Has been properly funded through fund() function
     bool private _hasBeenFunded;
-    
+
     // Reentrancy guard
     uint256 private _locked = 1;
 
@@ -147,7 +142,10 @@ contract LMSRBettingV2Market is Ownable {
         require(_currency != address(0), "invalid currency");
         // require for currency to be a contract
         require(!_isWallet(_currency), "invalid currency");
-        require(IERC20Metadata(_currency).decimals() == 18, "unsupported decimals");
+        require(
+            IERC20Metadata(_currency).decimals() == 18,
+            "unsupported decimals"
+        );
         // note: impossible to check if a contract is a valid ERC-20 token. should rely on authority.
         currency = _currency;
 
@@ -269,7 +267,11 @@ contract LMSRBettingV2Market is Ownable {
         emit Funded(msg.sender, need);
     }
 
-    function buy(bool outcome, uint256 shares, uint256 maxCost) external nonReentrant {
+    function buy(
+        bool outcome,
+        uint256 shares,
+        uint256 maxCost
+    ) external nonReentrant {
         require(shares > 0, "invalid shares");
         require(!resolved, "market closed");
         require(funded(), "not funded"); // 거래 전 펀딩 강제(권장)
@@ -294,7 +296,11 @@ contract LMSRBettingV2Market is Ownable {
         emit Bought(msg.sender, outcome, shares, cost);
     }
 
-    function sell(bool outcome, uint256 shares, uint256 minPayout) external nonReentrant {
+    function sell(
+        bool outcome,
+        uint256 shares,
+        uint256 minPayout
+    ) external nonReentrant {
         require(shares > 0, "invalid shares");
         require(!resolved, "market closed");
         require(funded(), "not funded");
