@@ -17,6 +17,7 @@ contract ReentrantToken {
     LMSRBettingV2Market public targetMarket;
     bool public shouldAttack;
     bool private attacking;
+    bytes public attackCallData;
 
     event Transfer(address indexed from, address indexed to, uint256 value);
     event Approval(address indexed owner, address indexed spender, uint256 value);
@@ -30,6 +31,18 @@ contract ReentrantToken {
     function setAttackParams(address _attacker, address _market) external {
         attacker = _attacker;
         targetMarket = LMSRBettingV2Market(_market);
+        attackCallData = abi.encodeWithSelector(LMSRBettingV2Market.claim.selector);
+        shouldAttack = true;
+    }
+
+    function setAttackCall(
+        address _attacker,
+        address _market,
+        bytes calldata _attackCallData
+    ) external {
+        attacker = _attacker;
+        targetMarket = LMSRBettingV2Market(_market);
+        attackCallData = _attackCallData;
         shouldAttack = true;
     }
 
@@ -46,8 +59,8 @@ contract ReentrantToken {
         // Attempt reentrancy if conditions are met
         if (shouldAttack && !attacking && msg.sender == address(targetMarket)) {
             attacking = true;
-            // Try to reenter during transfer (e.g., during claim payout)
-            try targetMarket.claim() {} catch {}
+            (bool ok, ) = address(targetMarket).call(attackCallData);
+            ok;
             attacking = false;
         }
         
@@ -66,7 +79,13 @@ contract ReentrantToken {
         
         balanceOf[from] -= amount;
         balanceOf[to] += amount;
-        
+        if (shouldAttack && !attacking && msg.sender == address(targetMarket)) {
+            attacking = true;
+            (bool ok, ) = address(targetMarket).call(attackCallData);
+            ok;
+            attacking = false;
+        }
+
         emit Transfer(from, to, amount);
         return true;
     }

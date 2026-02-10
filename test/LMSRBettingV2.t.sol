@@ -4,6 +4,7 @@ pragma solidity ^0.8.0;
 import {Test} from "forge-std/Test.sol";
 import {LMSRBettingV2Factory, LMSRBettingV2Market} from "../src/LMSRBettingV2.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
+import {MockERC20Decimals} from "./mocks/MockERC20Decimals.sol";
 
 contract LMSRBettingV2FactoryTest is Test {
     LMSRBettingV2Factory internal factory;
@@ -154,6 +155,12 @@ contract LMSRBettingV2MarketTest is Test {
     function test_RevertConstructorWithContractAsOwner() public {
         vm.expectRevert("owner is not a wallet");
         new LMSRBettingV2Market("Test", address(token), address(token), LIQUIDITY);
+    }
+
+    function test_RevertConstructorWithUnsupportedDecimals() public {
+        MockERC20Decimals usdc = new MockERC20Decimals("USD Coin", "USDC", 6);
+        vm.expectRevert("unsupported decimals");
+        new LMSRBettingV2Market("Test", owner, address(usdc), LIQUIDITY);
     }
 
     // ============ Funding Tests ============

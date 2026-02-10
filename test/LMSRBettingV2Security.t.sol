@@ -8,6 +8,7 @@ import {FeeOnTransferToken} from "./mocks/FeeOnTransferToken.sol";
 import {ReentrantToken} from "./mocks/ReentrantToken.sol";
 import {MockERC20Decimals} from "./mocks/MockERC20Decimals.sol";
 import {FalseReturningToken} from "./mocks/FalseReturningToken.sol";
+import {NoReturnToken} from "./mocks/NoReturnToken.sol";
 
 /// @notice Security-focused tests for LMSRBettingV2
 /// Tests edge cases, attack vectors, and critical vulnerabilities
@@ -16,7 +17,8 @@ contract LMSRBettingV2SecurityTest is Test {
     MockERC20 internal token;
     FeeOnTransferToken internal feeToken;
     ReentrantToken internal reentrantToken;
-    MockERC20Decimals internal usdcToken; // 6 decimals
+    MockERC20Decimals internal usdcToken; // non-18 decimals
+    NoReturnToken internal noReturnToken;
 
     address internal owner = makeAddr("owner");
     address internal alice = makeAddr("alice");
@@ -154,6 +156,74 @@ contract LMSRBettingV2SecurityTest is Test {
         assertGt(token.balanceOf(address(market)), market.pool());
     }
 
+    function test_DirectTransferDoesNotAffectQuotes() public {
+        market = new LMSRBettingV2Market(
+            "Test Market",
+            owner,
+            address(token),
+            LIQUIDITY
+        );
+
+        token.mint(owner, INITIAL_BALANCE);
+        token.mint(alice, INITIAL_BALANCE);
+
+        vm.prank(owner);
+        token.approve(address(market), type(uint256).max);
+        vm.prank(alice);
+        token.approve(address(market), type(uint256).max);
+
+        vm.prank(owner);
+        market.fund();
+
+        uint256 quoteBefore = market.quoteBuyCost(true, 1 ether);
+        vm.prank(alice);
+        token.transfer(address(market), 5 ether);
+        uint256 quoteAfter = market.quoteBuyCost(true, 1 ether);
+
+        assertEq(quoteBefore, quoteAfter);
+    }
+
+    function test_WithdrawSweepsDirectlyTransferredBalance() public {
+        market = new LMSRBettingV2Market(
+            "Test Market",
+            owner,
+            address(token),
+            LIQUIDITY
+        );
+
+        token.mint(owner, INITIAL_BALANCE);
+        token.mint(alice, INITIAL_BALANCE);
+        token.mint(bob, INITIAL_BALANCE);
+
+        vm.prank(owner);
+        token.approve(address(market), type(uint256).max);
+        vm.prank(alice);
+        token.approve(address(market), type(uint256).max);
+        vm.prank(bob);
+        token.approve(address(market), type(uint256).max);
+
+        vm.prank(owner);
+        market.fund();
+
+        uint256 cost = market.quoteBuyCost(true, 1 ether);
+        vm.prank(alice);
+        market.buy(true, 1 ether, cost);
+
+        vm.prank(bob);
+        token.transfer(address(market), 7 ether);
+
+        vm.prank(owner);
+        market.resolve(false);
+
+        uint256 ownerBefore = token.balanceOf(owner);
+        vm.prank(owner);
+        market.withdraw();
+        uint256 ownerAfter = token.balanceOf(owner);
+
+        assertGt(ownerAfter, ownerBefore);
+        assertEq(token.balanceOf(address(market)), 0);
+    }
+
     // ============================================
     // ❗ 3) EXP OVERFLOW BOUNDARY TESTS (중요)
     // ============================================
@@ -182,6 +252,60 @@ contract LMSRBettingV2SecurityTest is Test {
 
         vm.expectRevert("exp input too large");
         market.quoteBuyCost(true, hugeShares);
+    }
+
+    function test_ExpInputBoundaryAtLimitPassesForBothOutcomes() public {
+        market = new LMSRBettingV2Market(
+            "Test Market",
+            owner,
+            address(token),
+            LIQUIDITY
+        );
+
+        token.mint(owner, INITIAL_BALANCE);
+
+        vm.prank(owner);
+        token.approve(address(market), type(uint256).max);
+
+        vm.prank(owner);
+        market.fund();
+
+        uint256 exactBoundaryShares = 1350 ether; // q * 1e18 / b == 135e18
+        uint256 yesCost = market.quoteBuyCost(true, exactBoundaryShares);
+        uint256 noCost = market.quoteBuyCost(false, exactBoundaryShares);
+        assertGt(yesCost, 0);
+        assertGt(noCost, 0);
+    }
+
+    function test_TinyShareRoundTripAccounting() public {
+        market = new LMSRBettingV2Market(
+            "Test Market",
+            owner,
+            address(token),
+            LIQUIDITY
+        );
+
+        token.mint(owner, INITIAL_BALANCE);
+        token.mint(alice, INITIAL_BALANCE);
+
+        vm.prank(owner);
+        token.approve(address(market), type(uint256).max);
+        vm.prank(alice);
+        token.approve(address(market), type(uint256).max);
+
+        vm.prank(owner);
+        market.fund();
+
+        uint256 shares = 1;
+        uint256 buyCost = market.quoteBuyCost(true, shares);
+        vm.prank(alice);
+        market.buy(true, shares, buyCost);
+
+        uint256 sellPayout = market.quoteSellPayout(true, shares);
+        vm.prank(alice);
+        market.sell(true, shares, sellPayout);
+
+        assertGe(token.balanceOf(address(market)), market.pool());
     }
 
     function test_MaxSafeSharesPurchase() public {
@@ -221,75 +345,16 @@ contract LMSRBettingV2SecurityTest is Test {
     // ❗ 4) DIFFERENT TOKEN DECIMALS TESTS (중요)
     // ============================================
 
-    function test_6DecimalTokenOperations() public {
+    function test_Revert_6DecimalTokenUnsupported() public {
         usdcToken = new MockERC20Decimals("USD Coin", "USDC", 6);
-        
-        // Liquidity in 6 decimal terms (10 USDC = 10_000_000)
-        uint256 liquidity6 = 10_000_000; // 10 USDC
-        
-        market = new LMSRBettingV2Market(
-            "USDC Market",
-            owner,
-            address(usdcToken),
-            liquidity6
-        );
-
-        uint256 initialBalance6 = 1_000_000_000; // 1000 USDC
-        usdcToken.mint(owner, initialBalance6);
-        usdcToken.mint(alice, initialBalance6);
-        
-        vm.prank(owner);
-        usdcToken.approve(address(market), type(uint256).max);
-        vm.prank(alice);
-        usdcToken.approve(address(market), type(uint256).max);
-
-        // Fund market
-        vm.prank(owner);
-        market.fund();
-
-        assertTrue(market.funded());
-
-        // Buy with 6-decimal amounts
-        uint256 shares = 1_000_000; // 1 share in 6 decimals
-        uint256 cost = market.quoteBuyCost(true, shares);
-        
-        vm.prank(alice);
-        market.buy(true, shares, cost);
-
-        assertEq(market.yesShares(alice), shares);
+        vm.expectRevert("unsupported decimals");
+        new LMSRBettingV2Market("USDC Market", owner, address(usdcToken), LIQUIDITY);
     }
 
-    function test_8DecimalTokenOperations() public {
+    function test_Revert_8DecimalTokenUnsupported() public {
         MockERC20Decimals wbtcToken = new MockERC20Decimals("Wrapped BTC", "WBTC", 8);
-        
-        uint256 liquidity8 = 1_00_000_000; // 1 WBTC
-        
-        market = new LMSRBettingV2Market(
-            "WBTC Market",
-            owner,
-            address(wbtcToken),
-            liquidity8
-        );
-
-        uint256 initialBalance8 = 100_00_000_000; // 100 WBTC
-        wbtcToken.mint(owner, initialBalance8);
-        wbtcToken.mint(alice, initialBalance8);
-        
-        vm.prank(owner);
-        wbtcToken.approve(address(market), type(uint256).max);
-        vm.prank(alice);
-        wbtcToken.approve(address(market), type(uint256).max);
-
-        vm.prank(owner);
-        market.fund();
-
-        uint256 shares = 10_000_000; // 0.1 share in 8 decimals
-        uint256 cost = market.quoteBuyCost(true, shares);
-        
-        vm.prank(alice);
-        market.buy(true, shares, cost);
-
-        assertEq(market.yesShares(alice), shares);
+        vm.expectRevert("unsupported decimals");
+        new LMSRBettingV2Market("WBTC Market", owner, address(wbtcToken), LIQUIDITY);
     }
 
     // ============================================
@@ -437,6 +502,66 @@ contract LMSRBettingV2SecurityTest is Test {
         assertEq(market.pool(), token.balanceOf(address(market)));
     }
 
+    function testFuzz_PoolNeverExceedsBalance(uint96 seed, uint8 steps) public {
+        market = new LMSRBettingV2Market(
+            "Fuzz Market",
+            owner,
+            address(token),
+            LIQUIDITY
+        );
+
+        uint256 largeBalance = 10_000 ether;
+        token.mint(owner, largeBalance);
+        token.mint(alice, largeBalance);
+        token.mint(bob, largeBalance);
+
+        vm.prank(owner);
+        token.approve(address(market), type(uint256).max);
+        vm.prank(alice);
+        token.approve(address(market), type(uint256).max);
+        vm.prank(bob);
+        token.approve(address(market), type(uint256).max);
+
+        vm.prank(owner);
+        market.fund();
+
+        uint256 boundedSteps = bound(uint256(steps), 5, 35);
+        uint256 localSeed = uint256(seed) + 1;
+
+        for (uint256 i = 0; i < boundedSteps; i++) {
+            localSeed = uint256(keccak256(abi.encode(localSeed, i)));
+            address actor = (localSeed % 2 == 0) ? alice : bob;
+            bool outcome = (localSeed >> 1) % 2 == 0;
+            bool doBuy = (localSeed >> 2) % 3 != 0; // buy more often than sell
+            uint256 shares = ((localSeed >> 3) % 2e18) + 1e15; // [0.001e18, 2e18]
+
+            if (doBuy) {
+                uint256 cost = market.quoteBuyCost(outcome, shares);
+                vm.prank(actor);
+                market.buy(outcome, shares, cost);
+            } else {
+                uint256 owned = outcome
+                    ? market.yesShares(actor)
+                    : market.noShares(actor);
+
+                if (owned == 0) {
+                    continue;
+                }
+
+                uint256 sellShares = shares > owned ? owned : shares;
+                uint256 payout = market.quoteSellPayout(outcome, sellShares);
+                vm.prank(actor);
+                market.sell(outcome, sellShares, payout);
+            }
+
+            assertGe(
+                token.balanceOf(address(market)),
+                market.pool(),
+                "insolvent: balance below pool"
+            );
+        }
+    }
+
     function test_ComplexScenarioPoolBalanceConsistency() public {
         market = new LMSRBettingV2Market(
             "Test Market",
@@ -575,6 +700,41 @@ contract LMSRBettingV2SecurityTest is Test {
         vm.prank(owner);
         vm.expectRevert("winner shares outstanding");
         market.withdraw();
+    }
+
+    function test_WithdrawAfterClaimWindowWithWinnerSharesOutstanding() public {
+        market = new LMSRBettingV2Market(
+            "Test Market",
+            owner,
+            address(token),
+            LIQUIDITY
+        );
+
+        token.mint(owner, INITIAL_BALANCE);
+        token.mint(alice, INITIAL_BALANCE);
+
+        vm.prank(owner);
+        token.approve(address(market), type(uint256).max);
+        vm.prank(alice);
+        token.approve(address(market), type(uint256).max);
+
+        vm.prank(owner);
+        market.fund();
+
+        uint256 cost = market.quoteBuyCost(true, 1 wei);
+        vm.prank(alice);
+        market.buy(true, 1 wei, cost);
+
+        vm.prank(owner);
+        market.resolve(true);
+
+        vm.warp(block.timestamp + market.CLAIM_WINDOW() + 1);
+
+        uint256 ownerBalanceBefore = token.balanceOf(owner);
+        vm.prank(owner);
+        market.withdraw();
+
+        assertGt(token.balanceOf(owner), ownerBalanceBefore);
     }
 
     // ============================================
@@ -817,6 +977,158 @@ contract LMSRBettingV2SecurityTest is Test {
         vm.prank(alice);
         vm.expectRevert("transferFrom failed");
         market.buy(true, 1 ether, cost);
+    }
+
+    function test_NoReturnTokenSupportsFullLifecycle() public {
+        noReturnToken = new NoReturnToken();
+
+        market = new LMSRBettingV2Market(
+            "No Return Market",
+            owner,
+            address(noReturnToken),
+            LIQUIDITY
+        );
+
+        noReturnToken.mint(owner, INITIAL_BALANCE);
+        noReturnToken.mint(alice, INITIAL_BALANCE);
+
+        vm.prank(owner);
+        noReturnToken.approve(address(market), type(uint256).max);
+        vm.prank(alice);
+        noReturnToken.approve(address(market), type(uint256).max);
+
+        vm.prank(owner);
+        market.fund();
+
+        uint256 shares = 1 ether;
+        uint256 buyCost = market.quoteBuyCost(true, shares);
+
+        vm.prank(alice);
+        market.buy(true, shares, buyCost);
+
+        uint256 sellShares = 250_000;
+        uint256 payout = market.quoteSellPayout(true, sellShares);
+        vm.prank(alice);
+        market.sell(true, sellShares, payout);
+
+        vm.prank(owner);
+        market.resolve(true);
+
+        vm.prank(alice);
+        market.claim();
+
+        // Ensure contract interacted successfully with no-return transfer semantics.
+        assertEq(market.yesShares(alice), 0);
+        assertEq(market.qYes(), 0);
+    }
+
+    function test_ReentrancyProtectionOnBuy() public {
+        reentrantToken = new ReentrantToken();
+        market = new LMSRBettingV2Market(
+            "Reentrant Market",
+            owner,
+            address(reentrantToken),
+            LIQUIDITY
+        );
+
+        reentrantToken.mint(owner, INITIAL_BALANCE);
+        reentrantToken.mint(alice, INITIAL_BALANCE);
+        vm.prank(owner);
+        reentrantToken.approve(address(market), type(uint256).max);
+        vm.prank(alice);
+        reentrantToken.approve(address(market), type(uint256).max);
+
+        vm.prank(owner);
+        market.fund();
+
+        bytes memory attackData = abi.encodeWithSelector(
+            LMSRBettingV2Market.buy.selector,
+            true,
+            1 ether,
+            type(uint256).max
+        );
+        reentrantToken.setAttackCall(alice, address(market), attackData);
+
+        uint256 cost = market.quoteBuyCost(true, 1 ether);
+        vm.prank(alice);
+        market.buy(true, 1 ether, cost);
+
+        assertEq(market.yesShares(alice), 1 ether);
+    }
+
+    function test_ReentrancyProtectionOnSell() public {
+        reentrantToken = new ReentrantToken();
+        market = new LMSRBettingV2Market(
+            "Reentrant Market",
+            owner,
+            address(reentrantToken),
+            LIQUIDITY
+        );
+
+        reentrantToken.mint(owner, INITIAL_BALANCE);
+        reentrantToken.mint(alice, INITIAL_BALANCE);
+        vm.prank(owner);
+        reentrantToken.approve(address(market), type(uint256).max);
+        vm.prank(alice);
+        reentrantToken.approve(address(market), type(uint256).max);
+
+        vm.prank(owner);
+        market.fund();
+
+        uint256 buyCost = market.quoteBuyCost(true, 2 ether);
+        vm.prank(alice);
+        market.buy(true, 2 ether, buyCost);
+
+        bytes memory attackData = abi.encodeWithSelector(
+            LMSRBettingV2Market.sell.selector,
+            true,
+            1 ether,
+            0
+        );
+        reentrantToken.setAttackCall(alice, address(market), attackData);
+
+        uint256 payout = market.quoteSellPayout(true, 1 ether);
+        vm.prank(alice);
+        market.sell(true, 1 ether, payout);
+
+        assertEq(market.yesShares(alice), 1 ether);
+    }
+
+    function test_ReentrancyProtectionOnWithdraw() public {
+        reentrantToken = new ReentrantToken();
+        market = new LMSRBettingV2Market(
+            "Reentrant Market",
+            owner,
+            address(reentrantToken),
+            LIQUIDITY
+        );
+
+        reentrantToken.mint(owner, INITIAL_BALANCE);
+        reentrantToken.mint(alice, INITIAL_BALANCE);
+        vm.prank(owner);
+        reentrantToken.approve(address(market), type(uint256).max);
+        vm.prank(alice);
+        reentrantToken.approve(address(market), type(uint256).max);
+
+        vm.prank(owner);
+        market.fund();
+
+        uint256 cost = market.quoteBuyCost(false, 1 ether);
+        vm.prank(alice);
+        market.buy(false, 1 ether, cost);
+
+        vm.prank(owner);
+        market.resolve(true);
+
+        bytes memory attackData = abi.encodeWithSelector(
+            LMSRBettingV2Market.withdraw.selector
+        );
+        reentrantToken.setAttackCall(owner, address(market), attackData);
+
+        vm.prank(owner);
+        market.withdraw();
+
+        assertEq(reentrantToken.balanceOf(address(market)), 0);
     }
 
     function test_ReentrancyProtectionOnClaim() public {

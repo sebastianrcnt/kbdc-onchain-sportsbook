@@ -5,6 +5,10 @@ import {IERC20} from "./interfaces/IERC20.sol";
 import {FixedPointMathLib} from "./utils/FixedPointMathLib.sol";
 import {Ownable} from "./utils/Ownable.sol";
 
+interface IERC20Metadata {
+    function decimals() external view returns (uint8);
+}
+
 // lmsr market factory가 있고 여기서 마켓을 만들 수 있음.
 // 이 마켓 팩토리는 ERC-20 토큰을 용하여 마켓 운영 가능.
 // 마켓은 마켓 팩토리에서 생성되며, 마켓별로 수수료를 설정할 수 있음.
@@ -68,6 +72,7 @@ contract LMSRBettingV2Market is Ownable {
     uint256 public qNo;
     uint256 public pool;
     bool public winningOutcome;
+    uint256 public resolvedAt;
 
     mapping(address => uint256) public yesShares;
     mapping(address => uint256) public noShares;
@@ -91,6 +96,7 @@ contract LMSRBettingV2Market is Ownable {
     uint256 private constant LN_2_WAD = 693147180559945309;
     uint256 private constant MAX_EXP_INPUT_WAD = 135e18;
     uint256 private constant WAD = 1e18;
+    uint256 public constant CLAIM_WINDOW = 180 days;
 
     // [Events]
     event Bought(
@@ -141,6 +147,7 @@ contract LMSRBettingV2Market is Ownable {
         require(_currency != address(0), "invalid currency");
         // require for currency to be a contract
         require(!_isWallet(_currency), "invalid currency");
+        require(IERC20Metadata(_currency).decimals() == 18, "unsupported decimals");
         // note: impossible to check if a contract is a valid ERC-20 token. should rely on authority.
         currency = _currency;
 
@@ -329,17 +336,29 @@ contract LMSRBettingV2Market is Ownable {
         require(funded(), "not funded");
         resolved = true;
         winningOutcome = outcome;
+        resolvedAt = block.timestamp;
         emit Resolved(outcome);
     }
 
     function withdraw() external onlyOwner nonReentrant {
         require(resolved, "not resolved");
 
-        // 승리 outcome의 미청구 shares가 0이면 정산 종료로 간주
+        // Before the claim window ends, winners must claim before owner sweep.
+        // After the deadline, owner can sweep unclaimed balances to prevent griefing locks.
         if (winningOutcome) {
-            require(qYes == 0, "winner shares outstanding");
+            if (qYes > 0) {
+                require(
+                    block.timestamp >= resolvedAt + CLAIM_WINDOW,
+                    "winner shares outstanding"
+                );
+            }
         } else {
-            require(qNo == 0, "winner shares outstanding");
+            if (qNo > 0) {
+                require(
+                    block.timestamp >= resolvedAt + CLAIM_WINDOW,
+                    "winner shares outstanding"
+                );
+            }
         }
 
         uint256 balance = IERC20(currency).balanceOf(address(this));
