@@ -106,9 +106,9 @@ contract LMSRBettingV2SecurityTest is Test {
         vm.prank(alice);
         token.transfer(address(market), fundingAmount);
 
-        // ✅ FIXED: Market does NOT think it's funded now
+        // Market does NOT think it's funded now.
         assertFalse(market.funded());
-        assertEq(market.pool(), 0); // Pool is still 0!
+        assertEq(market.pool(), fundingAmount);
 
         // Alice CANNOT trade without owner properly funding
         vm.prank(alice);
@@ -120,7 +120,7 @@ contract LMSRBettingV2SecurityTest is Test {
         market.buy(true, 1 ether, cost);
     }
 
-    function test_PoolAndBalanceDivergenceAfterDirectTransfer() public {
+    function test_PoolTracksBalanceAfterDirectTransfer() public {
         market = new LMSRBettingV2Market(
             "Test Market",
             owner,
@@ -148,12 +148,11 @@ contract LMSRBettingV2SecurityTest is Test {
         vm.prank(alice);
         token.transfer(address(market), 5 ether);
 
-        // Pool and balance now diverge!
-        assertEq(market.pool(), fundingAmount);
+        // pool() now mirrors the actual token balance.
+        assertEq(market.pool(), fundingAmount + 5 ether);
         assertEq(token.balanceOf(address(market)), fundingAmount + 5 ether);
-        
-        // This creates accounting issues
-        assertGt(token.balanceOf(address(market)), market.pool());
+
+        assertEq(token.balanceOf(address(market)), market.pool());
     }
 
     function test_DirectTransferDoesNotAffectQuotes() public {

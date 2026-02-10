@@ -65,7 +65,6 @@ contract LMSRBettingV2Market is Ownable {
     string public name;
     uint256 public qYes;
     uint256 public qNo;
-    uint256 public pool;
     bool public winningOutcome;
     uint256 public resolvedAt;
 
@@ -166,6 +165,10 @@ contract LMSRBettingV2Market is Ownable {
         return _hasBeenFunded;
     }
 
+    function pool() public view returns (uint256) {
+        return IERC20(currency).balanceOf(address(this));
+    }
+
     function _assertExpInput(uint256 q, uint256 b) internal pure {
         uint256 input = FixedPointMathLib.fullMulDiv(q, WAD, b);
         require(input <= MAX_EXP_INPUT_WAD, "exp input too large");
@@ -258,7 +261,6 @@ contract LMSRBettingV2Market is Ownable {
         require(afterBal - beforeBal == need, "fee-on-transfer not supported");
 
         _hasBeenFunded = true;
-        pool += need; // subsidy도 pool에 포함시키려면 이렇게
         emit Funded(msg.sender, need);
     }
 
@@ -287,7 +289,6 @@ contract LMSRBettingV2Market is Ownable {
             noShares[msg.sender] += shares;
         }
 
-        pool += cost;
         emit Bought(msg.sender, outcome, shares, cost);
     }
 
@@ -318,7 +319,6 @@ contract LMSRBettingV2Market is Ownable {
             qNo -= shares;
             noShares[msg.sender] -= shares;
         }
-        pool -= payout;
 
         uint256 beforeBal = IERC20(currency).balanceOf(address(this));
         _safeTransfer(currency, msg.sender, payout);
@@ -387,9 +387,6 @@ contract LMSRBettingV2Market is Ownable {
             qNo -= shares;
         }
 
-        // accounting
-        pool -= shares;
-
         _safeTransfer(currency, msg.sender, shares);
 
         emit Claimed(msg.sender, winningOutcome, shares);
@@ -456,7 +453,7 @@ contract LMSRBettingV2Market is Ownable {
             MarketSummary({
                 name: name,
                 currency: currency,
-                pool: pool,
+                pool: pool(),
                 qYes: qYes,
                 qNo: qNo,
                 liquidity: liquidity,
