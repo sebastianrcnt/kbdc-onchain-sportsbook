@@ -67,6 +67,7 @@ contract LMSRBettingV2Market is Ownable {
     uint256 public qYes;
     uint256 public qNo;
     uint256 public pool;
+    bool public winningOutcome;
 
     mapping(address => uint256) public yesShares;
     mapping(address => uint256) public noShares;
@@ -99,6 +100,8 @@ contract LMSRBettingV2Market is Ownable {
         uint256 shares,
         uint256 cost
     );
+
+    event Claimed(address indexed user, bool indexed outcome, uint256 shares);
 
     event Funded(address indexed funder, uint256 amount);
 
@@ -230,77 +233,78 @@ contract LMSRBettingV2Market is Ownable {
         return _quoteSellPayout(outcome, shares);
     }
 
-    // [Payables]
+    // [Mutators]
     function fund() external onlyOwner {
         require(!funded(), "already funded");
-        IERC20(currency).transferFrom(
-            msg.sender,
-            address(this),
-            initialFunding()
-        );
-        emit Funded(msg.sender, initialFunding());
+        uint256 need = initialFunding();
+        uint256 beforeBal = IERC20(currency).balanceOf(address(this));
+        _safeTransferFrom(currency, msg.sender, address(this), need);
+        uint256 afterBal = IERC20(currency).balanceOf(address(this));
+
+        require(afterBal - beforeBal == need, "fee-on-transfer not supported");
+
+        pool += need; // subsidy도 pool에 포함시키려면 이렇게
+        emit Funded(msg.sender, need);
     }
 
     function buy(bool outcome, uint256 shares, uint256 maxCost) external {
         require(shares > 0, "invalid shares");
         require(!resolved, "market closed");
+        require(funded(), "not funded"); // 거래 전 펀딩 강제(권장)
 
         uint256 cost = _quoteBuyCost(outcome, shares);
         require(cost <= maxCost, "slippage exceeded");
 
-        // transfer currency to contract
-        IERC20(currency).transferFrom(msg.sender, address(this), cost);
+        uint256 beforeBal = IERC20(currency).balanceOf(address(this));
+        _safeTransferFrom(currency, msg.sender, address(this), cost);
+        uint256 afterBal = IERC20(currency).balanceOf(address(this));
+        require(afterBal - beforeBal == cost, "fee-on-transfer not supported");
 
-        // update market state
         if (outcome) {
             qYes += shares;
-        } else {
-            qNo += shares;
-        }
-
-        pool += cost;
-
-        // update user shares
-        if (outcome) {
             yesShares[msg.sender] += shares;
         } else {
+            qNo += shares;
             noShares[msg.sender] += shares;
         }
 
+        pool += cost;
         emit Bought(msg.sender, outcome, shares, cost);
     }
 
-    function sell(
-        bool outcome,
-        uint256 shares,
-        uint256 minPayout
-    ) external payable {
+    function sell(bool outcome, uint256 shares, uint256 minPayout) external {
         require(shares > 0, "invalid shares");
         require(!resolved, "market closed");
+        require(funded(), "not funded");
+
+        // 먼저 유저 보유 체크
+        if (outcome) {
+            require(yesShares[msg.sender] >= shares, "insufficient shares");
+        } else {
+            require(noShares[msg.sender] >= shares, "insufficient shares");
+        }
 
         uint256 payout = _quoteSellPayout(outcome, shares);
         require(payout >= minPayout, "slippage exceeded");
 
-        // update market state
+        // state update
         if (outcome) {
             qYes -= shares;
-        } else {
-            qNo -= shares;
-        }
-
-        pool -= payout;
-
-        // update user shares
-        if (outcome) {
-            require(yesShares[msg.sender] >= shares, "insufficient shares");
             yesShares[msg.sender] -= shares;
         } else {
-            require(noShares[msg.sender] >= shares, "insufficient shares");
+            qNo -= shares;
             noShares[msg.sender] -= shares;
         }
+        pool -= payout;
 
-        // transfer currency to user
-        IERC20(currency).transfer(msg.sender, payout);
+        uint256 beforeBal = IERC20(currency).balanceOf(address(this));
+        _safeTransfer(currency, msg.sender, payout);
+        uint256 afterBal = IERC20(currency).balanceOf(address(this));
+        require(
+            beforeBal - afterBal == payout,
+            "fee-on-transfer not supported"
+        );
+
         emit Sold(msg.sender, outcome, shares, payout);
     }
 
@@ -309,18 +313,80 @@ contract LMSRBettingV2Market is Ownable {
         require(!resolved, "already resolved");
         require(funded(), "not funded");
         resolved = true;
-
+        winningOutcome = outcome;
         emit Resolved(outcome);
     }
 
     function withdraw() external onlyOwner {
         require(resolved, "not resolved");
-        require(qYes == 0 && qNo == 0, "shares outstanding");
+
+        // 승리 outcome의 미청구 shares가 0이면 정산 종료로 간주
+        if (winningOutcome) {
+            require(qYes == 0, "winner shares outstanding");
+        } else {
+            require(qNo == 0, "winner shares outstanding");
+        }
 
         uint256 balance = IERC20(currency).balanceOf(address(this));
         require(balance > 0, "no balance");
 
-        IERC20(currency).transfer(owner, balance);
+        _safeTransfer(currency, owner, balance);
         emit Withdrawn(owner, balance);
+    }
+
+    function claim() external {
+        require(resolved, "not resolved");
+
+        uint256 shares = winningOutcome
+            ? yesShares[msg.sender]
+            : noShares[msg.sender];
+        require(shares > 0, "no claimable shares");
+
+        // burn user shares
+        if (winningOutcome) {
+            yesShares[msg.sender] = 0;
+            // 중요: winner-side 총 발행량 감소 (withdraw 조건 만들기 위함)
+            qYes -= shares;
+        } else {
+            noShares[msg.sender] = 0;
+            qNo -= shares;
+        }
+
+        // accounting
+        pool -= shares;
+
+        _safeTransfer(currency, msg.sender, shares);
+
+        emit Claimed(msg.sender, winningOutcome, shares);
+    }
+
+    function _safeTransferFrom(
+        address token,
+        address from,
+        address to,
+        uint256 amount
+    ) internal {
+        (bool ok, bytes memory data) = token.call(
+            abi.encodeWithSelector(
+                IERC20.transferFrom.selector,
+                from,
+                to,
+                amount
+            )
+        );
+        require(
+            ok && (data.length == 0 || abi.decode(data, (bool))),
+            "transferFrom failed"
+        );
+    }
+
+    function _safeTransfer(address token, address to, uint256 amount) internal {
+        (bool ok, bytes memory data) = token.call(
+            abi.encodeWithSelector(IERC20.transfer.selector, to, amount)
+        );
+        require(
+            ok && (data.length == 0 || abi.decode(data, (bool))),
+            "transfer failed"
+        );
     }
 }
