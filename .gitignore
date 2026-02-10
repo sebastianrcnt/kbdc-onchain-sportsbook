@@ -9,3 +9,6 @@ frontend/dist/
 
 # OS noise
 .DS_Store
+.env
+
+chain/
