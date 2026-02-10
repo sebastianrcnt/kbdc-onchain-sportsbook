@@ -3,17 +3,65 @@ pragma solidity ^0.8.0;
 
 import {IERC20} from "./interfaces/IERC20.sol";
 import {FixedPointMathLib} from "./utils/FixedPointMathLib.sol";
+import {Ownable} from "./utils/Ownable.sol";
 
 // lmsr market factory가 있고 여기서 마켓을 만들 수 있음.
 // 이 마켓 팩토리는 ERC-20 토큰을 용하여 마켓 운영 가능.
 // 마켓은 마켓 팩토리에서 생성되며, 마켓별로 수수료를 설정할 수 있음.
 // Initial Funding은 ERC-20 토큰으로 받으며, 최소수량 만큼 예치해야 함.
 
-contract LMSRBettingV2Factory {
+contract LMSRBettingV2Factory is Ownable {
+    // [State]
+    address[] public markets;
 
+    // [Events]
+    event MarketCreated(
+        address indexed market,
+        string name,
+        address indexed owner,
+        address indexed currency,
+        uint256 liquidity
+    );
+
+    // [Constructor]
+    constructor(address _owner) Ownable(_owner) {}
+
+    // [View]
+    function marketCount() external view returns (uint256) {
+        return markets.length;
+    }
+
+    function getMarket(uint256 index) external view returns (address) {
+        require(index < markets.length, "invalid index");
+        return markets[index];
+    }
+
+    function getAllMarkets() external view returns (address[] memory) {
+        return markets;
+    }
+
+    // [Factory]
+    function createMarket(
+        string memory name,
+        address marketOwner,
+        address currency,
+        uint256 liquidity
+    ) external returns (address market) {
+        LMSRBettingV2Market newMarket = new LMSRBettingV2Market(
+            name,
+            marketOwner,
+            currency,
+            liquidity
+        );
+
+        market = address(newMarket);
+        markets.push(market);
+
+        emit MarketCreated(market, name, marketOwner, currency, liquidity);
+    }
 }
 
-contract LMSRBettingV2Market {
+contract LMSRBettingV2Market is Ownable {
     // [Variables]
     string public name;
     uint256 public qYes;
@@ -25,7 +73,6 @@ contract LMSRBettingV2Market {
 
     // contract address of ERC-20 currency
     address public currency;
-    address public owner;
 
     // resolved?
     bool public resolved;
@@ -55,11 +102,9 @@ contract LMSRBettingV2Market {
 
     event Funded(address indexed funder, uint256 amount);
 
-    // [Modifiers]
-    modifier onlyOwner() {
-        require(msg.sender == owner, "unauthorized");
-        _;
-    }
+    event Resolved(bool indexed outcome);
+
+    event Withdrawn(address indexed recipient, uint256 amount);
 
     // [Constructor]
     constructor(
@@ -67,13 +112,12 @@ contract LMSRBettingV2Market {
         address _owner,
         address _currency,
         uint256 _liquidity
-    ) {
+    ) Ownable(_owner) {
         // [Name]
         name = _name;
 
-        // [Owner]
+        // [Owner - additional validation]
         require(_isWallet(_owner), "owner is not a wallet");
-        owner = _owner;
 
         // [Currency]
         // require for currency to be nonzero
@@ -262,5 +306,25 @@ contract LMSRBettingV2Market {
         // transfer currency to user
         IERC20(currency).transfer(msg.sender, payout);
         emit Sold(msg.sender, outcome, shares, payout);
+    }
+
+    // [Admin]
+    function resolve(bool outcome) external onlyOwner {
+        require(!resolved, "already resolved");
+        require(funded(), "not funded");
+        resolved = true;
+
+        emit Resolved(outcome);
+    }
+
+    function withdraw() external onlyOwner {
+        require(resolved, "not resolved");
+        require(qYes == 0 && qNo == 0, "shares outstanding");
+
+        uint256 balance = IERC20(currency).balanceOf(address(this));
+        require(balance > 0, "no balance");
+
+        IERC20(currency).transfer(owner, balance);
+        emit Withdrawn(owner, balance);
     }
 }
