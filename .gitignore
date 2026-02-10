@@ -12,3 +12,6 @@ frontend/dist/
 .env
 
 chain/
+-e 
+# Claude Code memory
+.claude/

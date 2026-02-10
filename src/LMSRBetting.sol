@@ -192,6 +192,8 @@ contract LMSRBetting {
         );
     }
 
+    // query how much money paid for buying a unit share in market
+    // outcome: 0 for yes, 1 for no
     function quoteBuyCost(
         uint256 marketId,
         uint8 outcome,
@@ -204,6 +206,8 @@ contract LMSRBetting {
         return _quoteBuyCost(market, outcome, shares);
     }
 
+    // query how much money paid for selling a unit share in market
+    // outcome: 0 for yes, 1 for no
     function quoteSellPayout(
         uint256 marketId,
         uint8 outcome,
@@ -216,6 +220,7 @@ contract LMSRBetting {
         return _quoteSellPayout(market, outcome, shares);
     }
 
+    // buy shares in market, safeguarded by maxCost
     function buy(
         uint256 marketId,
         uint8 outcome,
@@ -301,6 +306,7 @@ contract LMSRBetting {
         );
     }
 
+    // only oracle can resolve?
     function resolve(
         uint256 marketId,
         uint8 winningOutcome
