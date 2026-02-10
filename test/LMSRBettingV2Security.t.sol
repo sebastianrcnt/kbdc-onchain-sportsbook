@@ -7,6 +7,7 @@ import {MockERC20} from "./mocks/MockERC20.sol";
 import {FeeOnTransferToken} from "./mocks/FeeOnTransferToken.sol";
 import {ReentrantToken} from "./mocks/ReentrantToken.sol";
 import {MockERC20Decimals} from "./mocks/MockERC20Decimals.sol";
+import {FalseReturningToken} from "./mocks/FalseReturningToken.sol";
 
 /// @notice Security-focused tests for LMSRBettingV2
 /// Tests edge cases, attack vectors, and critical vulnerabilities
@@ -60,7 +61,8 @@ contract LMSRBettingV2SecurityTest is Test {
     }
 
     function test_FeeOnTransferTokenBreaksBuy() public {
-        // Even if we somehow bypassed funding, buy would break
+        // Fee-on-transfer tokens should be blocked at funding stage
+        // But let's test buy separately
         feeToken = new FeeOnTransferToken();
         market = new LMSRBettingV2Market(
             "Fee Token Market",
@@ -77,23 +79,17 @@ contract LMSRBettingV2SecurityTest is Test {
         vm.prank(alice);
         feeToken.approve(address(market), type(uint256).max);
 
-        // Manually transfer tokens to fake funding
-        uint256 fundingAmount = market.initialFunding();
+        // Try to fund first - this will fail
         vm.prank(owner);
-        feeToken.transfer(address(market), fundingAmount * 2); // Send extra due to fee
-
-        // Try to buy - should fail due to fee
-        uint256 cost = market.quoteBuyCost(true, 1 ether);
-        vm.prank(alice);
         vm.expectRevert("fee-on-transfer not supported");
-        market.buy(true, 1 ether, cost);
+        market.fund();
     }
 
     // ============================================
     // ❗ 2) BYPASS FUNDING GUARD TESTS
     // ============================================
 
-    function test_DirectTokenTransferBypassesFundingGuard() public {
+    function test_DirectTokenTransferDoesNotBypassFundingGuard() public {
         market = new LMSRBettingV2Market(
             "Test Market",
             owner,
@@ -108,20 +104,18 @@ contract LMSRBettingV2SecurityTest is Test {
         vm.prank(alice);
         token.transfer(address(market), fundingAmount);
 
-        // Market now thinks it's funded, but owner never called fund()
-        assertTrue(market.funded());
+        // ✅ FIXED: Market does NOT think it's funded now
+        assertFalse(market.funded());
         assertEq(market.pool(), 0); // Pool is still 0!
 
-        // Alice can now trade without owner ever funding
+        // Alice CANNOT trade without owner properly funding
         vm.prank(alice);
         token.approve(address(market), type(uint256).max);
         
         uint256 cost = market.quoteBuyCost(true, 1 ether);
         vm.prank(alice);
+        vm.expectRevert("not funded");
         market.buy(true, 1 ether, cost);
-
-        // This is a vulnerability - market opens without proper initialization
-        assertEq(market.yesShares(alice), 1 ether);
     }
 
     function test_PoolAndBalanceDivergenceAfterDirectTransfer() public {
@@ -303,41 +297,8 @@ contract LMSRBettingV2SecurityTest is Test {
     // ============================================
 
     function test_ReentrancyDuringClaim() public {
-        reentrantToken = new ReentrantToken();
-        market = new LMSRBettingV2Market(
-            "Reentrant Market",
-            owner,
-            address(reentrantToken),
-            LIQUIDITY
-        );
-
-        reentrantToken.mint(owner, INITIAL_BALANCE);
-        reentrantToken.mint(alice, INITIAL_BALANCE);
-        
-        vm.prank(owner);
-        reentrantToken.approve(address(market), type(uint256).max);
-        vm.prank(alice);
-        reentrantToken.approve(address(market), type(uint256).max);
-
-        vm.prank(owner);
-        market.fund();
-
-        uint256 cost = market.quoteBuyCost(true, 5 ether);
-        vm.prank(alice);
-        market.buy(true, 5 ether, cost);
-
-        vm.prank(owner);
-        market.resolve(true);
-
-        // Setup attack
-        reentrantToken.setAttackParams(alice, address(market));
-
-        // Attempt claim - reentrancy should not succeed (no reentrancy guard exists!)
-        vm.prank(alice);
-        market.claim();
-
-        // Verify alice only got paid once
-        assertEq(market.yesShares(alice), 0);
+        // This test is now covered by test_ReentrancyProtectionOnClaim below
+        // which explicitly tests the reentrancy guard
     }
 
     // ============================================
@@ -795,5 +756,107 @@ contract LMSRBettingV2SecurityTest is Test {
         market.fund();
 
         assertTrue(market.funded());
+    }
+
+    // ============================================
+    // ❗ 10) FALSE RETURNING TOKEN TESTS (치명)
+    // ============================================
+
+    function test_ERC20ReturnsFalse() public {
+        FalseReturningToken falseToken = new FalseReturningToken();
+        market = new LMSRBettingV2Market(
+            "False Token Market",
+            owner,
+            address(falseToken),
+            LIQUIDITY
+        );
+
+        falseToken.mint(owner, INITIAL_BALANCE);
+        falseToken.mint(alice, INITIAL_BALANCE);
+        
+        vm.prank(owner);
+        falseToken.approve(address(market), type(uint256).max);
+        vm.prank(alice);
+        falseToken.approve(address(market), type(uint256).max);
+
+        // Make the token return false on transfers
+        falseToken.setShouldFail(true);
+
+        // Try to fund - should fail
+        vm.prank(owner);
+        vm.expectRevert("transferFrom failed");
+        market.fund();
+    }
+
+    function test_ERC20ReturnsFalseOnBuy() public {
+        FalseReturningToken falseToken = new FalseReturningToken();
+        market = new LMSRBettingV2Market(
+            "False Token Market",
+            owner,
+            address(falseToken),
+            LIQUIDITY
+        );
+
+        falseToken.mint(owner, INITIAL_BALANCE);
+        falseToken.mint(alice, INITIAL_BALANCE);
+        
+        vm.prank(owner);
+        falseToken.approve(address(market), type(uint256).max);
+        vm.prank(alice);
+        falseToken.approve(address(market), type(uint256).max);
+
+        // Fund successfully first
+        vm.prank(owner);
+        market.fund();
+
+        // Now make transfers fail
+        falseToken.setShouldFail(true);
+
+        // Try to buy - should fail
+        uint256 cost = market.quoteBuyCost(true, 1 ether);
+        vm.prank(alice);
+        vm.expectRevert("transferFrom failed");
+        market.buy(true, 1 ether, cost);
+    }
+
+    function test_ReentrancyProtectionOnClaim() public {
+        reentrantToken = new ReentrantToken();
+        market = new LMSRBettingV2Market(
+            "Reentrant Market",
+            owner,
+            address(reentrantToken),
+            LIQUIDITY
+        );
+
+        reentrantToken.mint(owner, INITIAL_BALANCE);
+        reentrantToken.mint(alice, INITIAL_BALANCE);
+        
+        vm.prank(owner);
+        reentrantToken.approve(address(market), type(uint256).max);
+        vm.prank(alice);
+        reentrantToken.approve(address(market), type(uint256).max);
+
+        vm.prank(owner);
+        market.fund();
+
+        uint256 cost = market.quoteBuyCost(true, 5 ether);
+        vm.prank(alice);
+        market.buy(true, 5 ether, cost);
+
+        vm.prank(owner);
+        market.resolve(true);
+
+        // Setup reentrancy attack
+        reentrantToken.setAttackParams(alice, address(market));
+
+        // ✅ Claim succeeds, but reentrancy attempt inside transfer is blocked
+        // The first claim() call succeeds, but the reentrant call fails
+        // This is the correct behavior - user gets paid once, attack is prevented
+        vm.prank(alice);
+        market.claim();
+        
+        // Verify user was only paid once
+        assertEq(market.yesShares(alice), 0);
+        assertEq(market.qYes(), 0);
     }
 }

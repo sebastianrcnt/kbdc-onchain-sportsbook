@@ -77,6 +77,12 @@ contract LMSRBettingV2Market is Ownable {
 
     // resolved?
     bool public resolved;
+    
+    // Has been properly funded through fund() function
+    bool private _hasBeenFunded;
+    
+    // Reentrancy guard
+    uint256 private _locked = 1;
 
     // [Immutables]
     uint256 public immutable liquidity;
@@ -108,6 +114,14 @@ contract LMSRBettingV2Market is Ownable {
     event Resolved(bool indexed outcome);
 
     event Withdrawn(address indexed recipient, uint256 amount);
+
+    // [Modifiers]
+    modifier nonReentrant() {
+        require(_locked == 1, "reentrancy");
+        _locked = 2;
+        _;
+        _locked = 1;
+    }
 
     // [Constructor]
     constructor(
@@ -149,7 +163,7 @@ contract LMSRBettingV2Market is Ownable {
     }
 
     function funded() public view returns (bool) {
-        return IERC20(currency).balanceOf(address(this)) >= initialFunding();
+        return _hasBeenFunded;
     }
 
     function _assertExpInput(uint256 q, uint256 b) internal pure {
@@ -234,8 +248,8 @@ contract LMSRBettingV2Market is Ownable {
     }
 
     // [Mutators]
-    function fund() external onlyOwner {
-        require(!funded(), "already funded");
+    function fund() external onlyOwner nonReentrant {
+        require(!_hasBeenFunded, "already funded");
         uint256 need = initialFunding();
         uint256 beforeBal = IERC20(currency).balanceOf(address(this));
         _safeTransferFrom(currency, msg.sender, address(this), need);
@@ -243,11 +257,12 @@ contract LMSRBettingV2Market is Ownable {
 
         require(afterBal - beforeBal == need, "fee-on-transfer not supported");
 
+        _hasBeenFunded = true;
         pool += need; // subsidy도 pool에 포함시키려면 이렇게
         emit Funded(msg.sender, need);
     }
 
-    function buy(bool outcome, uint256 shares, uint256 maxCost) external {
+    function buy(bool outcome, uint256 shares, uint256 maxCost) external nonReentrant {
         require(shares > 0, "invalid shares");
         require(!resolved, "market closed");
         require(funded(), "not funded"); // 거래 전 펀딩 강제(권장)
@@ -272,7 +287,7 @@ contract LMSRBettingV2Market is Ownable {
         emit Bought(msg.sender, outcome, shares, cost);
     }
 
-    function sell(bool outcome, uint256 shares, uint256 minPayout) external {
+    function sell(bool outcome, uint256 shares, uint256 minPayout) external nonReentrant {
         require(shares > 0, "invalid shares");
         require(!resolved, "market closed");
         require(funded(), "not funded");
@@ -317,7 +332,7 @@ contract LMSRBettingV2Market is Ownable {
         emit Resolved(outcome);
     }
 
-    function withdraw() external onlyOwner {
+    function withdraw() external onlyOwner nonReentrant {
         require(resolved, "not resolved");
 
         // 승리 outcome의 미청구 shares가 0이면 정산 종료로 간주
@@ -334,7 +349,7 @@ contract LMSRBettingV2Market is Ownable {
         emit Withdrawn(owner, balance);
     }
 
-    function claim() external {
+    function claim() external nonReentrant {
         require(resolved, "not resolved");
 
         uint256 shares = winningOutcome
