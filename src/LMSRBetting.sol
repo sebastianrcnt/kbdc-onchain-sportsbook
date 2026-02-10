@@ -43,7 +43,10 @@ contract LMSRBetting {
     error NoClaimableShares();
     error Reentrancy();
 
-    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event OwnershipTransferred(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
     event FeeConfigUpdated(uint256 feeBps, address indexed feeRecipient);
     event MarketCreated(
         uint256 indexed marketId,
@@ -73,7 +76,11 @@ contract LMSRBetting {
         uint256 minPayout
     );
     event Resolved(uint256 indexed marketId, uint8 winningOutcome);
-    event Claimed(uint256 indexed marketId, address indexed user, uint256 payout);
+    event Claimed(
+        uint256 indexed marketId,
+        address indexed user,
+        uint256 payout
+    );
 
     Market[] private markets;
     mapping(uint256 => mapping(address => uint256[2])) public userShares;
@@ -96,8 +103,13 @@ contract LMSRBetting {
         unlocked = 1;
     }
 
-    constructor(address initialOwner, address initialFeeRecipient, uint256 initialFeeBps) {
-        if (initialOwner == address(0) || initialFeeRecipient == address(0)) revert ZeroAddress();
+    constructor(
+        address initialOwner,
+        address initialFeeRecipient,
+        uint256 initialFeeBps
+    ) {
+        if (initialOwner == address(0) || initialFeeRecipient == address(0))
+            revert ZeroAddress();
         if (initialFeeBps > BPS_DENOMINATOR) revert InvalidFeeBps();
 
         owner = initialOwner;
@@ -108,6 +120,7 @@ contract LMSRBetting {
         emit FeeConfigUpdated(initialFeeBps, initialFeeRecipient);
     }
 
+    // transfer ownership of root contract
     function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) revert ZeroAddress();
         address previousOwner = owner;
@@ -115,8 +128,14 @@ contract LMSRBetting {
         emit OwnershipTransferred(previousOwner, newOwner);
     }
 
-    function setFeeConfig(uint256 newFeeBps, address newFeeRecipient) external onlyOwner {
+    function setFeeConfig(
+        uint256 newFeeBps,
+        address newFeeRecipient
+    ) external onlyOwner {
+        // fee unit under denomiator? revert
         if (newFeeBps > BPS_DENOMINATOR) revert InvalidFeeBps();
+
+        // prevent burn
         if (newFeeRecipient == address(0)) revert ZeroAddress();
 
         feeBps = newFeeBps;
@@ -131,6 +150,8 @@ contract LMSRBetting {
 
     function requiredSubsidy(uint256 b) public pure returns (uint256) {
         if (b == 0) revert InvalidLiquidity();
+
+        // (b * ln(2)) / WAD
         return FixedPointMathLib.fullMulDivUp(b, LN_2_WAD, WAD);
     }
 
@@ -161,10 +182,21 @@ contract LMSRBetting {
             })
         );
 
-        emit MarketCreated(marketId, msg.sender, title, closeTime, b, msg.value);
+        emit MarketCreated(
+            marketId,
+            msg.sender,
+            title,
+            closeTime,
+            b,
+            msg.value
+        );
     }
 
-    function quoteBuyCost(uint256 marketId, uint8 outcome, uint256 shares) public view returns (uint256) {
+    function quoteBuyCost(
+        uint256 marketId,
+        uint8 outcome,
+        uint256 shares
+    ) public view returns (uint256) {
         if (shares == 0) revert InvalidShares();
         _assertOutcome(outcome);
 
@@ -172,7 +204,11 @@ contract LMSRBetting {
         return _quoteBuyCost(market, outcome, shares);
     }
 
-    function quoteSellPayout(uint256 marketId, uint8 outcome, uint256 shares) public view returns (uint256) {
+    function quoteSellPayout(
+        uint256 marketId,
+        uint8 outcome,
+        uint256 shares
+    ) public view returns (uint256) {
         if (shares == 0) revert InvalidShares();
         _assertOutcome(outcome);
 
@@ -231,7 +267,8 @@ contract LMSRBetting {
         _assertTradable(market);
 
         uint256 available = userShares[marketId][msg.sender][outcome];
-        if (available < shares) revert InsufficientUserShares(available, shares);
+        if (available < shares)
+            revert InsufficientUserShares(available, shares);
 
         uint256 payout = _quoteSellPayout(market, outcome, shares);
         if (payout < minPayout) revert SlippageExceeded(minPayout, payout);
@@ -252,10 +289,22 @@ contract LMSRBetting {
         _sendEth(msg.sender, userPayout);
         _sendEth(feeRecipient, fee);
 
-        emit Sold(marketId, msg.sender, outcome, shares, payout, userPayout, fee, minPayout);
+        emit Sold(
+            marketId,
+            msg.sender,
+            outcome,
+            shares,
+            payout,
+            userPayout,
+            fee,
+            minPayout
+        );
     }
 
-    function resolve(uint256 marketId, uint8 winningOutcome) external onlyOwner {
+    function resolve(
+        uint256 marketId,
+        uint8 winningOutcome
+    ) external onlyOwner {
         _assertOutcome(winningOutcome);
 
         Market storage market = _getMarket(marketId);
@@ -314,19 +363,28 @@ contract LMSRBetting {
         creator = market.creator;
     }
 
-    function getPriceWad(uint256 marketId) external view returns (uint256 yesPriceWad, uint256 noPriceWad) {
+    function getPriceWad(
+        uint256 marketId
+    ) external view returns (uint256 yesPriceWad, uint256 noPriceWad) {
         Market storage market = _getMarket(marketId);
         return _priceWad(market.qYes, market.qNo, market.b);
     }
 
-    function getUserShares(uint256 marketId, address user) external view returns (uint256 yesShares, uint256 noShares) {
+    function getUserShares(
+        uint256 marketId,
+        address user
+    ) external view returns (uint256 yesShares, uint256 noShares) {
         _getMarket(marketId);
         uint256[2] storage shares = userShares[marketId][user];
         yesShares = shares[0];
         noShares = shares[1];
     }
 
-    function _quoteBuyCost(Market storage market, uint8 outcome, uint256 shares) internal view returns (uint256) {
+    function _quoteBuyCost(
+        Market storage market,
+        uint8 outcome,
+        uint256 shares
+    ) internal view returns (uint256) {
         uint256 oldCost = _cost(market.qYes, market.qNo, market.b);
 
         uint256 newQYes = market.qYes;
@@ -345,14 +403,19 @@ contract LMSRBetting {
         return newCost - oldCost;
     }
 
-    function _quoteSellPayout(Market storage market, uint8 outcome, uint256 shares) internal view returns (uint256) {
+    function _quoteSellPayout(
+        Market storage market,
+        uint8 outcome,
+        uint256 shares
+    ) internal view returns (uint256) {
         uint256 oldCost = _cost(market.qYes, market.qNo, market.b);
 
         uint256 newQYes = market.qYes;
         uint256 newQNo = market.qNo;
 
         if (outcome == 0) {
-            if (newQYes < shares) revert InsufficientMarketDepth(newQYes, shares);
+            if (newQYes < shares)
+                revert InsufficientMarketDepth(newQYes, shares);
             newQYes -= shares;
         } else {
             if (newQNo < shares) revert InsufficientMarketDepth(newQNo, shares);
@@ -363,7 +426,11 @@ contract LMSRBetting {
         return oldCost - newCost;
     }
 
-    function _cost(uint256 qYes, uint256 qNo, uint256 b) internal pure returns (uint256) {
+    function _cost(
+        uint256 qYes,
+        uint256 qNo,
+        uint256 b
+    ) internal pure returns (uint256) {
         _assertExpInput(qYes, b);
         _assertExpInput(qNo, b);
 
@@ -377,7 +444,11 @@ contract LMSRBetting {
         return FixedPointMathLib.fullMulDiv(b, uint256(lnSum), WAD);
     }
 
-    function _priceWad(uint256 qYes, uint256 qNo, uint256 b) internal pure returns (uint256 yesPriceWad, uint256 noPriceWad) {
+    function _priceWad(
+        uint256 qYes,
+        uint256 qNo,
+        uint256 b
+    ) internal pure returns (uint256 yesPriceWad, uint256 noPriceWad) {
         _assertExpInput(qYes, b);
         _assertExpInput(qNo, b);
 
@@ -393,11 +464,13 @@ contract LMSRBetting {
     }
 
     function _feeOf(uint256 grossAmount) internal view returns (uint256) {
-        return FixedPointMathLib.fullMulDiv(grossAmount, feeBps, BPS_DENOMINATOR);
+        return
+            FixedPointMathLib.fullMulDiv(grossAmount, feeBps, BPS_DENOMINATOR);
     }
 
     function _assertTradable(Market storage market) internal view {
-        if (market.resolved || block.timestamp >= market.closeTime) revert MarketClosed();
+        if (market.resolved || block.timestamp >= market.closeTime)
+            revert MarketClosed();
     }
 
     function _assertOutcome(uint8 outcome) internal pure {
@@ -409,14 +482,16 @@ contract LMSRBetting {
         if (input > MAX_EXP_INPUT_WAD) revert ExpInputTooLarge();
     }
 
-    function _getMarket(uint256 marketId) internal view returns (Market storage market) {
+    function _getMarket(
+        uint256 marketId
+    ) internal view returns (Market storage market) {
         if (marketId >= markets.length) revert InvalidMarket();
         market = markets[marketId];
     }
 
     function _sendEth(address to, uint256 amount) internal {
         if (amount == 0) return;
-        (bool ok,) = to.call{value: amount}("");
+        (bool ok, ) = to.call{value: amount}("");
         if (!ok) revert TransferFailed();
     }
 }
